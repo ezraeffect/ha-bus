@@ -17,8 +17,10 @@ from . import websocket
 from .api import TagoApi
 from .const import (
     CARD_URL,
+    CONF_MAP_ENTITIES,
     CONF_ROAD_GEOMETRY,
     CONF_SCAN_INTERVAL,
+    DEFAULT_MAP_ENTITIES,
     DEFAULT_ROAD_GEOMETRY,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -70,6 +72,7 @@ async def _async_options_updated(hass: HomeAssistant, entry: TagoBusConfigEntry)
     if (
         options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL) != coordinator.scan_interval
         or options.get(CONF_ROAD_GEOMETRY, DEFAULT_ROAD_GEOMETRY) != coordinator.road_geometry
+        or frozenset(options.get(CONF_MAP_ENTITIES, DEFAULT_MAP_ENTITIES)) != coordinator.map_entities
     ):
         await hass.config_entries.async_reload(entry.entry_id)
         return

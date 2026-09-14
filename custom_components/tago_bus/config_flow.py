@@ -34,13 +34,17 @@ from .const import (
     CONF_ROUTE_IDS,
     CONF_ROUTE_NO,
     CONF_FAVORITES,
+    CONF_MAP_ENTITIES,
     CONF_ROAD_GEOMETRY,
     CONF_SCAN_INTERVAL,
     DEFAULT_CITY_CODE,
+    DEFAULT_MAP_ENTITIES,
     DEFAULT_ROAD_GEOMETRY,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     LOGGER,
+    MAP_ENTITY_BUSES,
+    MAP_ENTITY_FAVORITE_STOPS,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
@@ -218,6 +222,7 @@ class TagoBusOptionsFlow(OptionsFlow):
                         **options,
                         CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
                         CONF_ROAD_GEOMETRY: user_input[CONF_ROAD_GEOMETRY],
+                        CONF_MAP_ENTITIES: user_input.get(CONF_MAP_ENTITIES, []),
                         CONF_FAVORITES: new_favorites,
                     }
                 )
@@ -240,6 +245,17 @@ class TagoBusOptionsFlow(OptionsFlow):
                 CONF_ROAD_GEOMETRY,
                 default=options.get(CONF_ROAD_GEOMETRY, DEFAULT_ROAD_GEOMETRY),
             ): BooleanSelector(),
+            vol.Optional(
+                CONF_MAP_ENTITIES,
+                default=options.get(CONF_MAP_ENTITIES, DEFAULT_MAP_ENTITIES),
+            ): SelectSelector(
+                SelectSelectorConfig(
+                    options=[MAP_ENTITY_BUSES, MAP_ENTITY_FAVORITE_STOPS],
+                    multiple=True,
+                    mode=SelectSelectorMode.LIST,
+                    translation_key=CONF_MAP_ENTITIES,
+                )
+            ),
         }
         if stop_options:
             valid = {o["value"] for o in stop_options}

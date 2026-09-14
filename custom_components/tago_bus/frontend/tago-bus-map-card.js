@@ -6,7 +6,7 @@
  *
  * type: custom:tago-bus-map-card
  * entry_id: optional, limit to one configured route
- * height: 400
+ * height: optional px; omit to fill the panel/sections space
  * show_stops: true
  * show_route_line: true
  * show_legend: true
@@ -15,7 +15,7 @@
  * tiles: auto | naver | ha | osm
  */
 
-const CARD_VERSION = "0.4.0";
+const CARD_VERSION = "0.5.0";
 const LEAFLET_BASE = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4";
 // Base map sources, tried in this order for `tiles: auto`:
 //  1. naver_map_change integration (NAVER tiles proxied by HA)
@@ -25,8 +25,21 @@ const NAVER_STYLE_URL = "/api/map_tiles/naver_map_change/style";
 const HA_RASTER_URL = "/api/map_tiles/raster/{z}/{x}/{y}.png";
 const OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
 const OSM_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';const FALLBACK_COLORS = ["#1e88e5", "#f4511e", "#43a047", "#8e24aa"];
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
+const FALLBACK_COLORS = ["#1e88e5", "#f4511e", "#43a047", "#8e24aa"];
+// With several routes each gets one color (both directions share it);
+// a single route keeps per-direction colors from the integration.
+const ROUTE_PALETTE = [
+  "#1e88e5", "#f4511e", "#43a047", "#8e24aa", "#e53935",
+  "#00897b", "#6d4c41", "#d81b60", "#3949ab", "#c0ca33",
+];
+// Direction chevrons along route lines, in screen pixels.
+const ARROW_SPACING = 70;
+const ARROW_SIZE = 7;
+const MAX_ARROWS = 1500;
 const ROUTE_REFRESH_MS = 10 * 60 * 1000;
+const DEFAULT_HEIGHT = 400;
+const MIN_FILL_HEIGHT = 200;
 const GEOMETRY_RETRY_MS = 15 * 1000;
 const OVERVIEW_STORAGE_KEY = "tago-bus-map-card:overview-open";
 
@@ -72,6 +85,13 @@ function formatStops(stops) {
   return stops === 0 ? "도착" : `${stops}정거장 전`;
 }
 
+/** Bus coordinates; `bus_*` is set even when hidden from HA's own map. */
+function busLatLng(attributes) {
+  const lat = attributes.bus_latitude ?? attributes.latitude;
+  const lon = attributes.bus_longitude ?? attributes.longitude;
+  return lat === undefined || lat === null || lon === undefined || lon === null ? null : [lat, lon];
+}
+
 function readOverviewOpen() {
   try {
     const value = localStorage.getItem(OVERVIEW_STORAGE_KEY);
@@ -96,7 +116,6 @@ class TagoBusMapCard extends HTMLElement {
 
   setConfig(config) {
     this._config = {
-      height: 400,
       show_stops: true,
       show_route_line: true,
       show_legend: true,
@@ -107,10 +126,51 @@ class TagoBusMapCard extends HTMLElement {
       ...config,
     };
     if (this._container) {
-      this._container.style.height = `${Number(this._config.height) || 400}px`;
+      this._applySize();
       this._drawStatic();
       this._renderOverview();
     }
+  }
+
+  // Set by Home Assistant on cards inside a panel view.
+  set isPanel(value) {
+    this._isPanel = Boolean(value);
+    this._applySize();
+  }
+
+  get isPanel() {
+    return Boolean(this._isPanel);
+  }
+
+  _fixedHeight() {
+    const height = Number(this._config?.height);
+    return Number.isFinite(height) && height > 0 ? height : null;
+  }
+
+  /**
+   * A numeric `height` is used as is. Without one the card fills whatever
+   * height its parent gives it (panel view, sections grid); if the parent
+   * sizes to content instead, a panel view fills down to the window bottom
+   * and other views fall back to a default height.
+   */
+  _applySize() {
+    if (!this._container) return;
+    const fixed = this._fixedHeight();
+    this.toggleAttribute("fill", !fixed);
+    if (fixed) {
+      this._container.style.height = `${fixed}px`;
+      return;
+    }
+    this._container.style.height = "100%";
+    requestAnimationFrame(() => {
+      if (!this._container || this._fixedHeight() || this._container.clientHeight >= MIN_FILL_HEIGHT) return;
+      if (this._isPanel) {
+        const top = Math.max(0, this._container.getBoundingClientRect().top);
+        this._container.style.height = `${Math.max(MIN_FILL_HEIGHT, window.innerHeight - top)}px`;
+      } else {
+        this._container.style.height = `${DEFAULT_HEIGHT}px`;
+      }
+    });
   }
 
   set hass(hass) {
@@ -129,15 +189,27 @@ class TagoBusMapCard extends HTMLElement {
   }
 
   getCardSize() {
-    return Math.ceil((Number(this._config?.height) || 400) / 50);
+    return Math.ceil((this._fixedHeight() || DEFAULT_HEIGHT) / 50);
+  }
+
+  // Sections view: take the full width and a tall default, resizable in the UI.
+  getGridOptions() {
+    const fixed = this._fixedHeight();
+    return fixed
+      ? { columns: "full", rows: Math.ceil(fixed / 56), min_rows: 4 }
+      : { columns: "full", rows: 8, min_rows: 4 };
   }
 
   connectedCallback() {
+    this._onWindowResize ??= () => this._applySize();
+    window.addEventListener("resize", this._onWindowResize);
+    this._applySize();
     if (this._map) setTimeout(() => this._map.invalidateSize(), 0);
     if (!this._refreshTimer && this._started) this._startRefreshTimer();
   }
 
   disconnectedCallback() {
+    window.removeEventListener("resize", this._onWindowResize);
     clearInterval(this._refreshTimer);
     this._refreshTimer = undefined;
   }
@@ -150,6 +222,8 @@ class TagoBusMapCard extends HTMLElement {
       <link rel="stylesheet" href="${LEAFLET_BASE}/leaflet.min.css">
       <style>
         ha-card { overflow: hidden; position: relative; }
+        :host([fill]) { display: block; height: 100%; }
+        :host([fill]) ha-card { height: 100%; }
         .map { width: 100%; }
         .message { position: absolute; inset: 0; display: flex; align-items: center;
           justify-content: center; padding: 16px; text-align: center; color: var(--secondary-text-color);
@@ -184,9 +258,12 @@ class TagoBusMapCard extends HTMLElement {
           border: 1px solid var(--primary-color, #03a9f4); background: var(--primary-color, #03a9f4); color: #fff; }
         .fav-btn.on { background: transparent; color: var(--primary-color, #03a9f4); }
         .fav-btn:disabled { opacity: .6; cursor: progress; }
-        .legend { padding: 6px 10px; font-size: 12px; line-height: 1.6; }
+        .legend { padding: 6px 10px; font-size: 12px; line-height: 1.6; max-height: 40vh; overflow-y: auto; }
         .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
-          margin-right: 6px; vertical-align: middle; }
+          margin-right: 6px; vertical-align: middle; flex: none; }
+        .legend .lg-title { font-weight: 700; }
+        .legend .lg-item { display: flex; align-items: center; white-space: nowrap; }
+        .legend .lg-title + .lg-item { margin-top: 1px; }
         .overview { width: 250px; max-width: calc(100vw - 80px); overflow: hidden; }
         .overview.closed { width: auto; }
         .ov-head { display: flex; align-items: center; gap: 6px; padding: 7px 10px; cursor: pointer;
@@ -199,9 +276,20 @@ class TagoBusMapCard extends HTMLElement {
         .ov-route { padding: 8px 10px; cursor: pointer; border-left: 4px solid transparent; }
         .ov-route + .ov-route { border-top: 1px solid var(--divider-color, #eee); }
         .ov-route:hover { background: rgba(127,127,127,.08); }
-        .ov-route .name { font-weight: 600; }
+        .ov-route .ov-no { font-weight: 700; }
         .ov-bus { display: flex; justify-content: space-between; gap: 8px; margin-top: 3px; }
         .ov-bus .min { font-weight: 700; color: var(--primary-color, #03a9f4); }
+        /* Long text slides back and forth instead of wrapping or clipping. */
+        .marquee { overflow: hidden; white-space: nowrap; }
+        .marquee > span { display: inline-block; }
+        .marquee.scroll > span { animation: ov-marquee var(--duration, 8s) ease-in-out infinite alternate; }
+        @keyframes ov-marquee {
+          0%, 15% { transform: translateX(0); }
+          85%, 100% { transform: translateX(var(--shift, 0)); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+          .marquee.scroll > span { animation: none; }
+        }
       </style>
       <ha-card>
         <div class="map"></div>
@@ -209,7 +297,7 @@ class TagoBusMapCard extends HTMLElement {
       </ha-card>`;
     this._container = root.querySelector(".map");
     this._message = root.querySelector(".message");
-    this._container.style.height = `${Number(this._config.height) || 400}px`;
+    this._applySize();
 
     // Leaflet measures the container on creation, so wait for its CSS too.
     const css = root.querySelector("link");
@@ -240,13 +328,21 @@ class TagoBusMapCard extends HTMLElement {
     this._map.createPane("routeLines").style.zIndex = 390;
     this._lineRenderer = L.svg({ pane: "routeLines" });
     this._lineLayer = L.layerGroup().addTo(this._map);
+    this._arrowLayer = L.layerGroup().addTo(this._map);
     this._stopLayer = L.layerGroup().addTo(this._map);
     this._busLayer = L.layerGroup().addTo(this._map);
     this._busMarkers = new Map();
     this._stopMarkers = [];
+    this._lineData = [];
     this._overviewOpen = readOverviewOpen();
 
-    new ResizeObserver(() => this._map.invalidateSize()).observe(this._container);
+    // Chevrons are placed in screen space, so redo them when the view changes.
+    this._map.on("zoomend moveend", () => this._scheduleArrows());
+
+    new ResizeObserver(() => {
+      this._map.invalidateSize();
+      this._setupMarquees();
+    }).observe(this._container);
 
     await this._loadRoutes(true);
     this._startRefreshTimer();
@@ -386,20 +482,33 @@ class TagoBusMapCard extends HTMLElement {
   _setEntries(entries) {
     this._entries = entries;
     this._routes = new Map();
+    // Direction indexes restart at 0 in every configured route, so key them
+    // by entry as well.
     this._directions = new Map();
-    for (const entry of entries) {
+    this._entryColors = new Map();
+    this._multiRoute = entries.length > 1;
+    entries.forEach((entry, i) => {
+      this._entryColors.set(entry.entry_id, ROUTE_PALETTE[i % ROUTE_PALETTE.length]);
       for (const route of entry.routes) {
         this._routes.set(route.route_id, { ...route, entry_id: entry.entry_id });
-        for (const d of route.directions) this._directions.set(d.index, d);
+        for (const d of route.directions) this._directions.set(`${entry.entry_id}:${d.index}`, d);
       }
-    }
+    });
     this._drawStatic();
     this._updateBuses();
     this._renderOverview(true);
   }
 
-  _color(index) {
-    return this._directions?.get(index)?.color || FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+  _direction(entryId, index) {
+    return this._directions?.get(`${entryId}:${index}`);
+  }
+
+  _color(entryId, directionIndex = 0) {
+    if (this._multiRoute) return this._entryColors.get(entryId) || FALLBACK_COLORS[0];
+    return (
+      this._direction(entryId, directionIndex)?.color ||
+      FALLBACK_COLORS[directionIndex % FALLBACK_COLORS.length]
+    );
   }
 
   // ---------------------------------------------------------------- drawing
@@ -410,27 +519,30 @@ class TagoBusMapCard extends HTMLElement {
     this._lineLayer.clearLayers();
     this._stopLayer.clearLayers();
     this._stopMarkers = [];
+    this._lineData = [];
     if (this._legend) this._legend.remove();
 
     for (const route of this._routes.values()) {
       if (this._config.show_route_line) {
         for (const line of route.lines) {
+          const color = this._color(route.entry_id, line.direction_index);
           L.polyline(line.coordinates, {
             renderer: this._lineRenderer,
-            color: this._color(line.direction_index),
+            color,
             weight: 6,
             opacity: 0.45,
             lineCap: "round",
             lineJoin: "round",
             interactive: false,
           }).addTo(this._lineLayer);
+          this._lineData.push({ latlngs: line.coordinates.map(([lat, lon]) => L.latLng(lat, lon)), color });
         }
       }
 
       for (const station of route.stations) {
         const favorite = route.favorite_order === station.order;
         if (!this._config.show_stops && !favorite) continue;
-        const color = this._color(station.direction_index);
+        const color = this._color(route.entry_id, station.direction_index);
         const latlng = [station.latitude, station.longitude];
         const marker = favorite
           ? L.marker(latlng, {
@@ -470,16 +582,103 @@ class TagoBusMapCard extends HTMLElement {
       }
     }
 
-    if (this._config.show_legend && this._directions.size) {
+    if (this._config.show_legend && this._entries.length) {
       this._legend = L.control({ position: "bottomleft" });
       this._legend.onAdd = () => {
         const div = L.DomUtil.create("div", "panel legend");
-        div.innerHTML = [...this._directions.values()]
-          .map((d) => `<div><i style="background:${esc(d.color)}"></i>${esc(d.first_stop)} → ${esc(d.last_stop)}</div>`)
-          .join("");
+        div.innerHTML = this._legendHtml();
+        L.DomEvent.disableScrollPropagation(div);
         return div;
       };
       this._legend.addTo(this._map);
+    }
+    this._drawArrows();
+  }
+
+  /** One item per route; up and down directions are grouped under it. */
+  _legendHtml() {
+    const dot = (color) => `<i style="background:${esc(color)}"></i>`;
+    if (this._multiRoute) {
+      return this._entries
+        .map((e) => `<div class="lg-item">${dot(this._color(e.entry_id))}<b>${esc(e.route_no)}번</b></div>`)
+        .join("");
+    }
+    const entry = this._entries[0];
+    const directions = entry.routes.flatMap((r) => r.directions);
+    return (
+      `<div class="lg-title">${esc(entry.route_no)}번</div>` +
+      directions
+        .map((d) => `<div class="lg-item">${dot(this._color(entry.entry_id, d.index))}${esc(d.first_stop)} → ${esc(d.last_stop)}</div>`)
+        .join("")
+    );
+  }
+
+  _scheduleArrows() {
+    if (this._arrowFrame) return;
+    this._arrowFrame = requestAnimationFrame(() => {
+      this._arrowFrame = undefined;
+      this._drawArrows();
+    });
+  }
+
+  /** Small chevrons every ARROW_SPACING px pointing along travel direction. */
+  _drawArrows() {
+    if (!this._arrowLayer) return;
+    this._arrowLayer.clearLayers();
+    if (!this._config.show_route_line || !this._lineData.length) return;
+    const L = this._L;
+    const map = this._map;
+    const size = map.getSize();
+    const min = map.containerPointToLayerPoint([-ARROW_SIZE, -ARROW_SIZE]);
+    const max = map.containerPointToLayerPoint([size.x + ARROW_SIZE, size.y + ARROW_SIZE]);
+    const half = ARROW_SIZE / 2;
+    const wing = ARROW_SIZE * 0.55;
+    let budget = MAX_ARROWS;
+
+    for (const line of this._lineData) {
+      const points = line.latlngs.map((ll) => map.latLngToLayerPoint(ll));
+      const chevrons = [];
+      let next = ARROW_SPACING / 2;
+      let walked = 0;
+      for (let i = 0; i < points.length - 1 && budget > 0; i++) {
+        const p = points[i];
+        const dx = points[i + 1].x - p.x;
+        const dy = points[i + 1].y - p.y;
+        const length = Math.hypot(dx, dy);
+        if (!length) continue;
+        const ux = dx / length;
+        const uy = dy / length;
+        while (next <= walked + length && budget > 0) {
+          const t = (next - walked) / length;
+          const x = p.x + dx * t;
+          const y = p.y + dy * t;
+          if (x >= min.x && x <= max.x && y >= min.y && y <= max.y) {
+            const bx = x - ux * half;
+            const by = y - uy * half;
+            chevrons.push(
+              [
+                [bx - uy * wing, by + ux * wing],
+                [x + ux * half, y + uy * half],
+                [bx + uy * wing, by - ux * wing],
+              ].map(([px, py]) => map.layerPointToLatLng(L.point(px, py))),
+            );
+            budget--;
+          }
+          next += ARROW_SPACING;
+        }
+        walked += length;
+      }
+      if (chevrons.length) {
+        L.polyline(chevrons, {
+          renderer: this._lineRenderer,
+          color: line.color,
+          weight: 2,
+          opacity: 0.95,
+          lineCap: "round",
+          lineJoin: "round",
+          interactive: false,
+        }).addTo(this._arrowLayer);
+      }
     }
   }
 
@@ -488,7 +687,7 @@ class TagoBusMapCard extends HTMLElement {
       (s) =>
         s.entity_id.startsWith("geo_location.") &&
         s.attributes.source === "tago_bus" &&
-        s.attributes.latitude !== undefined &&
+        busLatLng(s.attributes) &&
         (!this._config.entry_id || s.attributes.config_entry_id === this._config.entry_id),
     );
   }
@@ -501,19 +700,20 @@ class TagoBusMapCard extends HTMLElement {
       const a = state.attributes;
       const id = state.entity_id;
       seen.add(id);
-      const color = this._color(a.direction_index ?? 0);
+      const color = this._color(a.config_entry_id, a.direction_index ?? 0);
       const html = `<div class="bus" style="background:${esc(color)}">${esc(a.route_no)}</div>`;
       const icon = () => L.divIcon({ className: "bus-icon", html, iconSize: [30, 30], iconAnchor: [15, 15] });
+      const position = busLatLng(a);
       let entry = this._busMarkers.get(id);
       if (!entry) {
-        const marker = L.marker([a.latitude, a.longitude], { icon: icon(), zIndexOffset: 1000 })
+        const marker = L.marker(position, { icon: icon(), zIndexOffset: 1000 })
           .bindTooltip(() => this._busTooltip(id), { direction: "top", offset: [0, -16], className: "tip" })
           .on("click", () => this._openMoreInfo(id))
           .addTo(this._busLayer);
         entry = { marker, html };
         this._busMarkers.set(id, entry);
       } else {
-        entry.marker.setLatLng([a.latitude, a.longitude]);
+        entry.marker.setLatLng(position);
         if (entry.html !== html) {
           entry.marker.setIcon(icon());
           entry.html = html;
@@ -592,7 +792,7 @@ class TagoBusMapCard extends HTMLElement {
   }
 
   _stopHeaderHtml(route, station) {
-    const direction = this._directions.get(station.direction_index);
+    const direction = this._direction(route.entry_id, station.direction_index);
     const star = route.favorite_order === station.order ? "★ " : "";
     return (
       `<b class="title">${star}${esc(station.name)}</b>` +
@@ -707,20 +907,31 @@ class TagoBusMapCard extends HTMLElement {
           this._applyOverviewOpen();
         });
         div.querySelector(".ov-body").addEventListener("click", (ev) => {
-          const item = ev.target.closest(".ov-route");
+          const item = ev.target.closest(".ov-route[data-order]");
           if (item) this._focusStop(item.dataset.route, Number(item.dataset.order));
         });
         return div;
       };
       this._overview.addTo(this._map);
-      this._overviewHtml = undefined;
+      this._overviewLayout = undefined;
       this._applyOverviewOpen();
     }
 
-    const html = this._overviewBodyHtml();
-    if (force || html !== this._overviewHtml) {
-      this._overview.getContainer().querySelector(".ov-body").innerHTML = html;
-      this._overviewHtml = html;
+    // Rebuild the static part only when routes or favorites change, so the
+    // scrolling text isn't restarted by every arrival update.
+    const body = this._overview.getContainer().querySelector(".ov-body");
+    const layout = this._overviewLayoutHtml();
+    if (force || layout !== this._overviewLayout) {
+      body.innerHTML = layout;
+      this._overviewLayout = layout;
+      requestAnimationFrame(() => this._setupMarquees());
+    }
+    for (const rows of body.querySelectorAll(".ov-rows")) {
+      const html = this._overviewRowsHtml(rows.dataset.route, Number(rows.dataset.order));
+      if (rows._html !== html) {
+        rows.innerHTML = html;
+        rows._html = html;
+      }
     }
   }
 
@@ -729,48 +940,75 @@ class TagoBusMapCard extends HTMLElement {
     if (!div) return;
     div.classList.toggle("closed", !this._overviewOpen);
     div.querySelector(".ov-head").setAttribute("aria-expanded", String(this._overviewOpen));
+    if (this._overviewOpen) requestAnimationFrame(() => this._setupMarquees());
   }
 
-  _overviewBodyHtml() {
-    const multipleRoutes = this._routes.size > 1;
+  _overviewLayoutHtml() {
+    const multipleVariants = [...this._routes.values()].some(
+      (r) => [...this._routes.values()].filter((o) => o.entry_id === r.entry_id).length > 1,
+    );
     const blocks = [];
     for (const route of this._routes.values()) {
-      const variant = multipleRoutes ? ` <span class="muted">${esc(route.start_stop)}→${esc(route.end_stop)}</span>` : "";
-      if (route.favorite_order === null || route.favorite_order === undefined) {
+      const title = `<div class="ov-no">${esc(route.route_no)}번</div>`;
+      const station = route.stations.find((s) => s.order === route.favorite_order);
+      if (!station) {
         blocks.push(
-          `<div class="ov-route" style="border-left-color:${esc(this._color(route.directions[0]?.index ?? 0))}">` +
-            `<div class="name">${esc(route.route_no)}번${variant}</div>` +
-            `<div class="muted">지도에서 정류장을 눌러 ★ 즐겨찾기를 설정하세요</div></div>`,
+          `<div class="ov-route" style="border-left-color:${esc(this._color(route.entry_id, route.directions[0]?.index ?? 0))}">` +
+            title +
+            `<div class="muted marquee"><span>지도에서 정류장을 눌러 즐겨찾는 정류장을 설정하세요</span></div>` +
+            `</div>`,
         );
         continue;
       }
-      const station = route.stations.find((s) => s.order === route.favorite_order);
-      if (!station) continue;
-      const direction = this._directions.get(station.direction_index);
-      const { source, buses } = this._arrivalsFor(route.route_id, station.order);
-      const rows = buses.length
-        ? buses
-            .map((bus, i) => {
-              const minutes = formatMinutes(bus.minutes);
-              const stops = formatStops(bus.stops);
-              return (
-                `<div class="ov-bus"><span>${i === 0 ? "이번" : "다음"}</span>` +
-                `<span><span class="min">${esc(minutes || stops)}</span>` +
-                `${minutes && stops ? ` <span class="muted">${esc(stops)}</span>` : ""}</span></div>`
-              );
-            })
-            .join("")
-        : `<div class="muted">다가오는 버스 없음</div>`;
+      const direction = this._direction(route.entry_id, station.direction_index);
+      // Separate route variants only need telling apart when a route has several.
+      const variant = multipleVariants ? ` · ${route.start_stop}→${route.end_stop}` : "";
       blocks.push(
         `<div class="ov-route" data-route="${esc(route.route_id)}" data-order="${station.order}" ` +
-          `style="border-left-color:${esc(this._color(station.direction_index))}">` +
-          `<div class="name">${esc(route.route_no)}번 · ★ ${esc(station.name)}${variant}</div>` +
-          `<div class="muted">${esc(direction?.label || "")}${source === "location" && buses.length ? " · 위치 기준" : ""}</div>` +
-          rows +
+          `style="border-left-color:${esc(this._color(route.entry_id, station.direction_index))}">` +
+          title +
+          `<div class="marquee"><span>${esc(station.name)}</span></div>` +
+          `<div class="muted marquee"><span>${esc(`${direction?.label || ""}${variant}`)}</span></div>` +
+          `<div class="ov-rows" data-route="${esc(route.route_id)}" data-order="${station.order}"></div>` +
           `</div>`,
       );
     }
     return blocks.join("") || `<div class="ov-route muted">표시할 노선이 없습니다</div>`;
+  }
+
+  _overviewRowsHtml(routeId, order) {
+    const { source, buses } = this._arrivalsFor(routeId, order);
+    if (!buses.length) return `<div class="muted">다가오는 버스 없음</div>`;
+    return (
+      buses
+        .map((bus, i) => {
+          const minutes = formatMinutes(bus.minutes);
+          const stops = formatStops(bus.stops);
+          return (
+            `<div class="ov-bus"><span>${i === 0 ? "이번" : "다음"}</span>` +
+            `<span><span class="min">${esc(minutes || stops)}</span>` +
+            `${minutes && stops ? ` <span class="muted">${esc(stops)}</span>` : ""}</span></div>`
+          );
+        })
+        .join("") + (source === "location" ? `<div class="muted">버스 위치 기준</div>` : "")
+    );
+  }
+
+  /** Start the back-and-forth scroll on overview lines that don't fit. */
+  _setupMarquees() {
+    const body = this._overview?.getContainer()?.querySelector(".ov-body");
+    if (!body || !this._overviewOpen) return;
+    for (const box of body.querySelectorAll(".marquee")) {
+      const text = box.firstElementChild;
+      if (!text) continue;
+      box.classList.remove("scroll");
+      const overflow = text.scrollWidth - box.clientWidth;
+      if (overflow > 2) {
+        text.style.setProperty("--shift", `-${overflow}px`);
+        text.style.setProperty("--duration", `${Math.max(5, 3 + overflow / 25).toFixed(1)}s`);
+        box.classList.add("scroll");
+      }
+    }
   }
 
   _keepClearOfOverview(popup) {
@@ -800,7 +1038,7 @@ class TagoBusMapCard extends HTMLElement {
     for (const route of this._routes.values()) {
       for (const s of route.stations) points.push([s.latitude, s.longitude]);
     }
-    for (const s of this._busStates()) points.push([s.attributes.latitude, s.attributes.longitude]);
+    for (const s of this._busStates()) points.push(busLatLng(s.attributes));
     if (points.length) this._map.fitBounds(points, { padding: [24, 24] });
   }
 

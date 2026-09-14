@@ -15,7 +15,7 @@ from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, MAP_ENTITY_FAVORITE_STOPS
 from .coordinator import TagoBusConfigEntry, TagoBusCoordinator
 from .models import Arrival, BusVehicle, Direction, RouteMeta, WatchedStop
 
@@ -138,14 +138,16 @@ class FavoriteStopSensor(TagoBusEntity):
         if stop is None:
             return {"route_id": self._route_id, "favorite_stop": None}
         station = stop.station
+        # Standard latitude/longitude would put the sensor on HA's own map.
+        prefix = "" if MAP_ENTITY_FAVORITE_STOPS in self.coordinator.map_entities else "stop_"
         return {
             "route_id": self._route_id,
             "favorite_stop": station.name,
             "stop_id": station.node_id,
             "stop_order": station.order,
             "direction": stop.direction.label,
-            "latitude": station.latitude,
-            "longitude": station.longitude,
+            f"{prefix}latitude": station.latitude,
+            f"{prefix}longitude": station.longitude,
             "approaching_buses": [
                 {"vehicle_no": v.vehicle_no, "stops_remaining": n, "current_stop": v.stop_name}
                 for n, v in self._approaching
