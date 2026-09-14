@@ -16,6 +16,7 @@ from homeassistant.const import CONF_API_KEY
 from homeassistant.core import callback
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.selector import (
+    BooleanSelector,
     NumberSelector,
     NumberSelectorConfig,
     NumberSelectorMode,
@@ -32,15 +33,18 @@ from .const import (
     CONF_CITY_NAME,
     CONF_ROUTE_IDS,
     CONF_ROUTE_NO,
+    CONF_FAVORITES,
+    CONF_ROAD_GEOMETRY,
     CONF_SCAN_INTERVAL,
     DEFAULT_CITY_CODE,
+    DEFAULT_ROAD_GEOMETRY,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
     LOGGER,
     MAX_SCAN_INTERVAL,
     MIN_SCAN_INTERVAL,
 )
-from .models import RouteInfo
+from .models import RouteInfo, parse_stop_key, stop_key
 
 
 def _error_key(err: TagoError) -> str:
@@ -190,24 +194,93 @@ class TagoBusOptionsFlow(OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
+        options = self.config_entry.options
+        favorites: dict[str, int] = options.get(CONF_FAVORITES, {})
+        current_keys = [stop_key(rid, order) for rid, order in favorites.items()]
+        stop_options = self._stop_options()
+        errors: dict[str, str] = {}
+
         if user_input is not None:
-            return self.async_create_entry(
-                data={CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL])}
+            new_favorites: dict[str, int] = dict(favorites)
+            if CONF_FAVORITES in user_input:
+                new_favorites = {}
+                for key in user_input[CONF_FAVORITES]:
+                    if (parsed := parse_stop_key(key)) is None:
+                        continue
+                    route_id, order = parsed
+                    if route_id in new_favorites:
+                        errors[CONF_FAVORITES] = "one_favorite_per_route"
+                        break
+                    new_favorites[route_id] = order
+            if not errors:
+                return self.async_create_entry(
+                    data={
+                        **options,
+                        CONF_SCAN_INTERVAL: int(user_input[CONF_SCAN_INTERVAL]),
+                        CONF_ROAD_GEOMETRY: user_input[CONF_ROAD_GEOMETRY],
+                        CONF_FAVORITES: new_favorites,
+                    }
+                )
+            current_keys = user_input.get(CONF_FAVORITES, current_keys)
+
+        schema: dict[Any, Any] = {
+            vol.Required(
+                CONF_SCAN_INTERVAL,
+                default=options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL),
+            ): NumberSelector(
+                NumberSelectorConfig(
+                    min=MIN_SCAN_INTERVAL,
+                    max=MAX_SCAN_INTERVAL,
+                    step=5,
+                    unit_of_measurement="s",
+                    mode=NumberSelectorMode.BOX,
+                )
+            ),
+            vol.Required(
+                CONF_ROAD_GEOMETRY,
+                default=options.get(CONF_ROAD_GEOMETRY, DEFAULT_ROAD_GEOMETRY),
+            ): BooleanSelector(),
+        }
+        if stop_options:
+            valid = {o["value"] for o in stop_options}
+            schema[
+                vol.Optional(
+                    CONF_FAVORITES,
+                    default=[k for k in current_keys if k in valid],
+                )
+            ] = SelectSelector(
+                SelectSelectorConfig(
+                    options=stop_options,
+                    multiple=True,
+                    mode=SelectSelectorMode.DROPDOWN,
+                )
             )
-        current = self.config_entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         return self.async_show_form(
             step_id="init",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_SCAN_INTERVAL, default=current): NumberSelector(
-                        NumberSelectorConfig(
-                            min=MIN_SCAN_INTERVAL,
-                            max=MAX_SCAN_INTERVAL,
-                            step=5,
-                            unit_of_measurement="s",
-                            mode=NumberSelectorMode.BOX,
-                        )
-                    )
-                }
-            ),
+            data_schema=vol.Schema(schema),
+            errors=errors,
+            description_placeholders={
+                "stops_note": ""
+                if stop_options
+                else "⚠️ 통합이 로드되지 않아 정류장 목록을 불러올 수 없습니다."
+            },
         )
+
+    def _stop_options(self) -> list[SelectOptionDict]:
+        coordinator = getattr(self.config_entry, "runtime_data", None)
+        if coordinator is None:
+            return []
+        multiple_routes = len(coordinator.routes) > 1
+        result: list[SelectOptionDict] = []
+        for meta in coordinator.routes.values():
+            prefix = f"[{meta.info.start_stop}→{meta.info.end_stop}] " if multiple_routes else ""
+            for order in sorted(meta.stations):
+                station = meta.stations[order]
+                direction = meta.directions_by_order[order]
+                result.append(
+                    SelectOptionDict(
+                        value=stop_key(meta.info.route_id, order),
+                        label=f"{prefix}{order}. {station.name} ({direction.label})",
+                    )
+                )
+        return result

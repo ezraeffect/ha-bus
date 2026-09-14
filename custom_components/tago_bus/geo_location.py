@@ -14,7 +14,7 @@ from homeassistant.util.location import distance
 from .const import DOMAIN, SOURCE
 from .coordinator import TagoBusConfigEntry, TagoBusCoordinator
 from .marker import marker_url
-from .models import BusVehicle
+from .models import BusVehicle, stops_until
 
 
 async def async_setup_entry(
@@ -27,9 +27,9 @@ async def async_setup_entry(
 
     @callback
     def _sync() -> None:
-        if not coordinator.last_update_success:
+        if not coordinator.last_update_success or coordinator.data is None:
             return
-        vehicles = coordinator.data or {}
+        vehicles = coordinator.data.vehicles
 
         new: list[BusLocationEvent] = []
         for key, vehicle in vehicles.items():
@@ -86,6 +86,13 @@ class BusLocationEvent(GeolocationEvent):
         if self.hass is not None:
             self.async_write_ha_state()
 
+    def _favorite_stop(self) -> dict[str, Any] | None:
+        v = self._vehicle
+        stop = self._coordinator.favorites.get(v.route_id)
+        if stop is None or (n := stops_until(v.stop_order, stop.station.order)) is None:
+            return None
+        return {"stop": stop.station.name, "direction": stop.direction.label, "stops_remaining": n}
+
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         v = self._vehicle
@@ -94,6 +101,7 @@ class BusLocationEvent(GeolocationEvent):
             "route_no": v.route_no,
             "route_id": v.route_id,
             "direction": v.direction.label,
+            "direction_index": v.direction.index,
             "direction_first_stop": v.direction.first_stop,
             "direction_last_stop": v.direction.last_stop,
             "updown_code": v.direction.updown,
@@ -101,5 +109,7 @@ class BusLocationEvent(GeolocationEvent):
             "current_stop_id": v.stop_id,
             "stop_order": v.stop_order,
             "next_stop": v.next_stop,
+            "favorite_stop": self._favorite_stop(),
             "config_entry": self._coordinator.config_entry.title,
+            "config_entry_id": self._coordinator.config_entry.entry_id,
         }
