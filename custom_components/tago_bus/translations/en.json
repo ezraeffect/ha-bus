@@ -1,0 +1,54 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "TAGO Bus Location",
+        "description": "Enter the general service key from data.go.kr. You must apply for both 'TAGO bus location' and 'TAGO bus route' APIs. Either the Decoding or Encoding key works.",
+        "data": {
+          "api_key": "Service key"
+        }
+      },
+      "city": {
+        "title": "City and route",
+        "description": "Choose a city and enter the route number.",
+        "data": {
+          "city_code": "City",
+          "route_no": "Route number"
+        }
+      },
+      "route": {
+        "title": "Select route {route_no}",
+        "description": "Found {count} route(s) numbered {route_no}. Select the ones to show. If each direction is registered separately, select both.",
+        "data": {
+          "route_ids": "Routes"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid service key. New keys can take 1-2 hours to activate, and both the bus route and bus location APIs must be approved.",
+      "cannot_connect": "Could not connect to data.go.kr.",
+      "quota_exceeded": "Daily request quota exceeded.",
+      "no_route_selected": "Select at least one route.",
+      "unknown": "Unexpected error. Check the logs."
+    },
+    "abort": {
+      "already_configured": "This route is already configured.",
+      "route_not_found": "Route {route_no} was not found.",
+      "invalid_auth": "Invalid service key.",
+      "cannot_connect": "Could not connect to data.go.kr.",
+      "quota_exceeded": "Daily request quota exceeded.",
+      "unknown": "Unexpected error. Check the logs."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Polling",
+        "description": "Shorter intervals use more of your daily quota. Polling slows to every 5 minutes automatically while no bus is running.",
+        "data": {
+          "scan_interval": "Scan interval (seconds)"
+        }
+      }
+    }
+  }
+}

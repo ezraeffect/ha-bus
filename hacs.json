@@ -1,0 +1,5 @@
+{
+  "name": "TAGO Bus Location",
+  "render_readme": true,
+  "homeassistant": "2025.1.0"
+}
