@@ -22,7 +22,7 @@
 ## 2. HACS로 설치
 
 1. HACS → 오른쪽 위 ⋮ → **사용자 지정 저장소**를 엽니다.
-2. 이 저장소 URL을 입력하고 유형은 **Integration**으로 고릅니다.
+2. `https://github.com/ezraeffect/ha-bus`를 입력하고 유형은 **Integration**으로 고릅니다.
 3. **TAGO Bus Location**을 설치한 뒤 Home Assistant를 재시작합니다.
 
 HACS 없이 설치하려면 `custom_components/tago_bus` 폴더를 HA 설정 폴더의 `custom_components/` 아래에 복사하면 됩니다.
@@ -80,7 +80,6 @@ API를 한 번 조회할 때마다 선택한 노선 수만큼 호출합니다.
 python -m unittest discover -s tests -v
 ```
 
-GitHub에 올리기 전에 `custom_components/tago_bus/manifest.json`에서 `documentation`, `issue_tracker` 주소의 `OWNER`를 본인 GitHub 계정으로 바꾸고, `codeowners`도 채우세요.
 HACS 기본 저장소 목록에 등록하려면 저장소에 설명(description)과 토픽이 있어야 합니다.
 
 데이터 출처: 국토교통부 국가대중교통정보센터(TAGO), 공공데이터포털

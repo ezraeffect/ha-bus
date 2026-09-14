@@ -1,13 +1,13 @@
 {
   "domain": "tago_bus",
   "name": "TAGO Bus Location",
-  "codeowners": [],
+  "codeowners": ["@ezraeffect"],
   "config_flow": true,
   "dependencies": ["http"],
-  "documentation": "https://github.com/OWNER/ha-bus",
+  "documentation": "https://github.com/ezraeffect/ha-bus",
   "integration_type": "service",
   "iot_class": "cloud_polling",
-  "issue_tracker": "https://github.com/OWNER/ha-bus/issues",
+  "issue_tracker": "https://github.com/ezraeffect/ha-bus/issues",
   "requirements": [],
   "version": "0.1.0"
 }
