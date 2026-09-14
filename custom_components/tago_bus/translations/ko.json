@@ -48,16 +48,26 @@
         "data": {
           "scan_interval": "조회 주기(초)",
           "road_geometry": "실제 도로를 따라 경로선 그리기",
+          "map_entities": "HA 기본 지도에 표시할 엔티티",
           "favorites": "즐겨찾는 정류장"
         },
         "data_description": {
           "road_geometry": "정류장 좌표를 OpenStreetMap 기반 공개 경로 서버(OSRM)로 보내 도로 경로를 받아옵니다. 노선 모양이 바뀔 때만 조회하고 결과는 저장해 둡니다.",
+          "map_entities": "선택하지 않은 엔티티는 HA 지도 대시보드와 지도 카드에 나오지 않습니다. TAGO Bus Map 카드에는 항상 표시됩니다. 버스를 빼면 geo_location 영역(zone) 트리거도 동작하지 않습니다.",
           "favorites": "순환 노선은 같은 이름의 정류장이 방향별로 따로 있으니 '○○ 방면'을 확인하세요."
         }
       }
     },
     "error": {
       "one_favorite_per_route": "즐겨찾는 정류장은 노선마다 하나만 고를 수 있습니다."
+    }
+  },
+  "selector": {
+    "map_entities": {
+      "options": {
+        "buses": "운행 중인 버스",
+        "favorite_stops": "즐겨찾는 정류장 센서"
+      }
     }
   }
 }

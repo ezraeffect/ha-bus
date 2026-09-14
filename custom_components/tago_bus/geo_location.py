@@ -11,7 +11,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.util import slugify
 from homeassistant.util.location import distance
 
-from .const import DOMAIN, SOURCE
+from .const import DOMAIN, MAP_ENTITY_BUSES, SOURCE
 from .coordinator import TagoBusConfigEntry, TagoBusCoordinator
 from .marker import marker_url
 from .models import BusVehicle, stops_until
@@ -74,8 +74,11 @@ class BusLocationEvent(GeolocationEvent):
     def _apply(self, vehicle: BusVehicle) -> None:
         self._vehicle = vehicle
         self._attr_name = f"{vehicle.route_no}번 {vehicle.vehicle_no} ({vehicle.direction.label})"
-        self._attr_latitude = vehicle.latitude
-        self._attr_longitude = vehicle.longitude
+        # Without standard coordinates HA's own map skips the bus; the tago_bus
+        # card reads bus_latitude/bus_longitude instead.
+        on_ha_map = MAP_ENTITY_BUSES in self._coordinator.map_entities
+        self._attr_latitude = vehicle.latitude if on_ha_map else None
+        self._attr_longitude = vehicle.longitude if on_ha_map else None
         meters = distance(self._home[0], self._home[1], vehicle.latitude, vehicle.longitude)
         self._attr_distance = round(meters / 1000, 2) if meters is not None else None
         self._attr_entity_picture = marker_url(vehicle.route_no, vehicle.direction.index)
@@ -98,6 +101,8 @@ class BusLocationEvent(GeolocationEvent):
         v = self._vehicle
         return {
             "vehicle_no": v.vehicle_no,
+            "bus_latitude": v.latitude,
+            "bus_longitude": v.longitude,
             "route_no": v.route_no,
             "route_id": v.route_id,
             "direction": v.direction.label,

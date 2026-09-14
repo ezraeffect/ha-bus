@@ -14,10 +14,12 @@ from .api import TagoApi, TagoAuthError, TagoError, TagoQuotaError
 from .const import (
     CONF_CITY_CODE,
     CONF_FAVORITES,
+    CONF_MAP_ENTITIES,
     CONF_ROAD_GEOMETRY,
     CONF_ROUTE_IDS,
     CONF_ROUTE_NO,
     CONF_SCAN_INTERVAL,
+    DEFAULT_MAP_ENTITIES,
     DEFAULT_ROAD_GEOMETRY,
     DEFAULT_SCAN_INTERVAL,
     DOMAIN,
@@ -56,6 +58,9 @@ class TagoBusCoordinator(DataUpdateCoordinator[TagoBusData]):
     ) -> None:
         self.scan_interval: int = entry.options.get(CONF_SCAN_INTERVAL, DEFAULT_SCAN_INTERVAL)
         self.road_geometry: bool = entry.options.get(CONF_ROAD_GEOMETRY, DEFAULT_ROAD_GEOMETRY)
+        self.map_entities: frozenset[str] = frozenset(
+            entry.options.get(CONF_MAP_ENTITIES, DEFAULT_MAP_ENTITIES)
+        )
         self._interval = timedelta(seconds=self.scan_interval)
         super().__init__(
             hass,

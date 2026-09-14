@@ -20,7 +20,14 @@ CONF_ROAD_GEOMETRY = "road_geometry"
 
 DEFAULT_ROAD_GEOMETRY = True
 
-VERSION = "0.4.0"
+# Which entities expose standard latitude/longitude, i.e. show up on Home
+# Assistant's own map (Map dashboard `show_all`, map card, zone triggers).
+CONF_MAP_ENTITIES = "map_entities"
+MAP_ENTITY_BUSES = "buses"
+MAP_ENTITY_FAVORITE_STOPS = "favorite_stops"
+DEFAULT_MAP_ENTITIES = [MAP_ENTITY_BUSES]
+
+VERSION = "0.5.0"
 
 # Public OSRM demo server: used once per route shape, results are cached.
 OSRM_ROUTE_URL = "https://router.project-osrm.org/route/v1/driving/"

@@ -48,16 +48,26 @@
         "data": {
           "scan_interval": "Scan interval (seconds)",
           "road_geometry": "Draw route lines along real roads",
+          "map_entities": "Entities shown on Home Assistant's map",
           "favorites": "Favorite stops"
         },
         "data_description": {
           "road_geometry": "Sends stop coordinates to the public OSRM routing server (OpenStreetMap). Only queried when a route shape changes; results are cached.",
+          "map_entities": "Unselected entities stay off the Map dashboard and map cards. The TAGO Bus Map card always shows them. Without buses, geo_location zone triggers stop working.",
           "favorites": "Loop routes list the same stop name once per direction, so check the direction label."
         }
       }
     },
     "error": {
       "one_favorite_per_route": "Pick at most one favorite stop per route."
+    }
+  },
+  "selector": {
+    "map_entities": {
+      "options": {
+        "buses": "Buses in service",
+        "favorite_stops": "Favorite stop sensors"
+      }
     }
   }
 }
