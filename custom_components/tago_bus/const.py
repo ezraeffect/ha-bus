@@ -20,7 +20,7 @@ CONF_ROAD_GEOMETRY = "road_geometry"
 
 DEFAULT_ROAD_GEOMETRY = True
 
-VERSION = "0.3.0"
+VERSION = "0.4.0"
 
 # Public OSRM demo server: used once per route shape, results are cached.
 OSRM_ROUTE_URL = "https://router.project-osrm.org/route/v1/driving/"

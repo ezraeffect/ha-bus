@@ -12,14 +12,20 @@
  * show_legend: true
  * show_overview: true
  * dark_mode: auto | light | dark
+ * tiles: auto | naver | ha | osm
  */
 
-const CARD_VERSION = "0.3.0";
+const CARD_VERSION = "0.4.0";
 const LEAFLET_BASE = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4";
-const TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
-const TILE_ATTRIBUTION =
-  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';
-const FALLBACK_COLORS = ["#1e88e5", "#f4511e", "#43a047", "#8e24aa"];
+// Base map sources, tried in this order for `tiles: auto`:
+//  1. naver_map_change integration (NAVER tiles proxied by HA)
+//  2. HA core map_tiles proxy (2026.9+; OSM tiles fetched server-side)
+//  3. OSM directly (older HA)
+const NAVER_STYLE_URL = "/api/map_tiles/naver_map_change/style";
+const HA_RASTER_URL = "/api/map_tiles/raster/{z}/{x}/{y}.png";
+const OSM_TILE_URL = "https://tile.openstreetmap.org/{z}/{x}/{y}.png";
+const OSM_ATTRIBUTION =
+  '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors';const FALLBACK_COLORS = ["#1e88e5", "#f4511e", "#43a047", "#8e24aa"];
 const ROUTE_REFRESH_MS = 10 * 60 * 1000;
 const GEOMETRY_RETRY_MS = 15 * 1000;
 const OVERVIEW_STORAGE_KEY = "tago-bus-map-card:overview-open";
@@ -97,6 +103,7 @@ class TagoBusMapCard extends HTMLElement {
       show_overview: true,
       dark_mode: "auto",
       scroll_wheel_zoom: true,
+      tiles: "auto",
       ...config,
     };
     if (this._container) {
@@ -226,9 +233,8 @@ class TagoBusMapCard extends HTMLElement {
       fadeAnimation: false,
       scrollWheelZoom: this._config.scroll_wheel_zoom,
     });
-    L.tileLayer(TILE_URL, { attribution: TILE_ATTRIBUTION, maxZoom: 19 }).addTo(this._map);
-    this._syncTheme();
     this._map.setView([this._hass.config.latitude, this._hass.config.longitude], 13);
+    await this._setupBaseLayer();
 
     // Route lines are drawn as SVG vectors below stops and buses.
     this._map.createPane("routeLines").style.zIndex = 390;
@@ -247,7 +253,111 @@ class TagoBusMapCard extends HTMLElement {
   }
 
   _startRefreshTimer() {
-    this._refreshTimer = setInterval(() => this._loadRoutes(false), ROUTE_REFRESH_MS);
+    this._refreshTimer = setInterval(() => {
+      this._loadRoutes(false);
+      // Core rotates tile tokens every 20 minutes and keeps the previous one
+      // valid, so refreshing on this 10 minute cycle never breaks tiles.
+      this._refreshTileToken();
+    }, ROUTE_REFRESH_MS);
+  }
+
+  // ---------------------------------------------------------------- base map
+
+  async _fetchTileToken() {
+    try {
+      const result = await this._hass.callWS({ type: "map_tiles/access_token" });
+      return result?.token || null;
+    } catch {
+      return null; // HA before 2026.9 has no map_tiles integration
+    }
+  }
+
+  async _refreshTileToken() {
+    if (!this._baseLayer?.options.token) return;
+    const token = await this._fetchTileToken();
+    if (token) this._baseLayer.options.token = token;
+  }
+
+  /** Raster layer from the naver_map_change integration's style, if installed. */
+  async _naverLayer(token, dark) {
+    const L = this._L;
+    const dpr = window.devicePixelRatio > 0 ? window.devicePixelRatio : 1;
+    try {
+      const response = await fetch(
+        `${NAVER_STYLE_URL}/${dark ? "dark" : "light"}.json?dpr=${dpr}&token=${encodeURIComponent(token)}`,
+        { credentials: "same-origin" },
+      );
+      if (!response.ok) return null;
+      const style = await response.json();
+      const source = Object.values(style.sources || {}).find(
+        (s) => s.type === "raster" && Array.isArray(s.tiles) && s.tiles.length,
+      );
+      if (!source) return null;
+      // The style is written for HA's own map, which appends the token itself.
+      let template = source.tiles[0].replace(/([?&])token=[^&]*&?/, "$1").replace(/[?&]$/, "");
+      template += `${template.includes("?") ? "&" : "?"}token={token}`;
+      const tileSize = source.tileSize || 256;
+      return L.tileLayer(template, {
+        token,
+        tileSize,
+        zoomOffset: tileSize === 512 ? -1 : 0,
+        maxNativeZoom: source.maxzoom ?? 19,
+        maxZoom: 20,
+        attribution: source.attribution || "&copy; NAVER",
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  async _setupBaseLayer() {
+    const L = this._L;
+    const mode = this._config.tiles;
+    const dark = this._isDark();
+    const token = mode === "osm" ? null : await this._fetchTileToken();
+
+    let layer = null;
+    let kind = "osm";
+    if (token && (mode === "auto" || mode === "naver")) {
+      layer = await this._naverLayer(token, dark);
+      if (layer) kind = "naver";
+    }
+    if (!layer && token) {
+      layer = L.tileLayer(`${HA_RASTER_URL}?token={token}`, {
+        token,
+        maxNativeZoom: 19,
+        maxZoom: 20,
+        attribution: OSM_ATTRIBUTION,
+      });
+      kind = "ha";
+    }
+    if (!layer) {
+      layer = L.tileLayer(OSM_TILE_URL, {
+        maxZoom: 19,
+        attribution: OSM_ATTRIBUTION,
+        // OSM rejects tile requests without a Referer, and HA's no-referrer
+        // policy would strip it; send just this page's origin.
+        referrerPolicy: "strict-origin-when-cross-origin",
+      });
+    }
+
+    // A token that expired while the device slept: fetch a new one and retry.
+    let lastRetry = 0;
+    layer.on("tileerror", async () => {
+      if (!layer.options.token || Date.now() - lastRetry < 30000) return;
+      lastRetry = Date.now();
+      const fresh = await this._fetchTileToken();
+      if (fresh) {
+        layer.options.token = fresh;
+        layer.redraw();
+      }
+    });
+
+    if (this._baseLayer) this._baseLayer.remove();
+    this._baseLayer = layer.addTo(this._map);
+    this._baseKind = kind;
+    this._baseDark = dark;
+    this._syncTheme();
   }
 
   async _loadRoutes(fit) {
@@ -701,8 +811,21 @@ class TagoBusMapCard extends HTMLElement {
   }
 
   _syncTheme() {
+    if (!this._baseLayer) return;
+    const dark = this._isDark();
+    if (this._baseKind === "naver") {
+      // NAVER has real dark tiles: switch styles instead of inverting.
+      this._container.classList.remove("dark");
+      if (dark !== this._baseDark && !this._switchingBase) {
+        this._switchingBase = true;
+        this._setupBaseLayer().finally(() => {
+          this._switchingBase = false;
+        });
+      }
+      return;
+    }
     // OSM has no dark tiles, so invert the light ones.
-    this._container.classList.toggle("dark", this._isDark());
+    this._container.classList.toggle("dark", dark);
   }
 
   _openMoreInfo(entityId) {
