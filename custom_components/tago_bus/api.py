@@ -14,6 +14,7 @@ from .models import RouteInfo, extract_items
 BASE_URL = "https://apis.data.go.kr/1613000"
 ROUTE_SERVICE = "BusRouteInfoInqireService"
 LOCATION_SERVICE = "BusLcInfoInqireService"
+ARRIVAL_SERVICE = "ArvlInfoInqireService"
 
 AUTH_ERRORS = (
     "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
@@ -126,6 +127,15 @@ class TagoApi:
             "getRouteAcctoBusLcList",
             cityCode=city_code,
             routeId=route_id,
+        )
+
+    async def get_arrivals(self, city_code: str, node_id: str) -> list[dict[str, Any]]:
+        """Arrival predictions for every route at a stop."""
+        return await self._request(
+            ARRIVAL_SERVICE,
+            "getSttnAcctoArvlPrearngeInfoList",
+            cityCode=city_code,
+            nodeId=node_id,
         )
 
 

@@ -71,6 +71,8 @@ class Station:
     name: str
     order: int
     updown: str | None
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 @dataclass(slots=True)
@@ -116,6 +118,8 @@ def build_route_meta(
             name=str(item.get("nodenm", "")),
             order=order,
             updown=None if updown in (None, "") else str(updown),
+            latitude=_to_float(item.get("gpslati")),
+            longitude=_to_float(item.get("gpslong")),
         )
 
     current: Direction | None = None
@@ -137,6 +141,124 @@ def build_route_meta(
             Direction(first_index, None, info.start_stop, info.end_stop)
         )
     return meta
+
+
+@dataclass(slots=True)
+class WatchedStop:
+    """The favorite stop of one route variant (at most one per route id)."""
+
+    key: str  # "<route_id>:<order>"
+    route_id: str
+    station: Station
+    direction: Direction
+
+    @property
+    def label(self) -> str:
+        return f"{self.station.name} ({self.direction.label})"
+
+
+def stop_key(route_id: str, order: int) -> str:
+    return f"{route_id}:{order}"
+
+
+def parse_stop_key(key: str) -> tuple[str, int] | None:
+    route_id, _, order_text = key.rpartition(":")
+    order = _to_int(order_text)
+    if not route_id or order is None:
+        return None
+    return route_id, order
+
+
+def resolve_favorites(
+    favorites: dict[str, int], routes: dict[str, RouteMeta]
+) -> tuple[dict[str, WatchedStop], dict[str, int]]:
+    """Map {route_id: station order} to stations; returns (resolved, unknown)."""
+    resolved: dict[str, WatchedStop] = {}
+    unknown: dict[str, int] = {}
+    for route_id, order in favorites.items():
+        meta = routes.get(route_id)
+        station = meta.stations.get(order) if meta else None
+        if meta is None or station is None:
+            unknown[route_id] = order
+            continue
+        resolved[route_id] = WatchedStop(
+            key=stop_key(route_id, order),
+            route_id=route_id,
+            station=station,
+            direction=meta.directions_by_order.get(order, meta.directions[0]),
+        )
+    return resolved, unknown
+
+
+Point = tuple[float, float]  # (lat, lon)
+
+
+def direction_segments(meta: RouteMeta) -> list[tuple[int, list[Point]]]:
+    """Stations split into per-direction polylines.
+
+    Each segment also includes the first station of the next direction, so the
+    drawn line stays continuous where the direction changes.
+    """
+    stations = [
+        s
+        for s in (meta.stations[o] for o in sorted(meta.stations))
+        if s.latitude is not None and s.longitude is not None
+    ]
+    segments: list[tuple[int, list[Point]]] = []
+    start = 0
+    for i in range(1, len(stations) + 1):
+        index = meta.directions_by_order[stations[start].order].index
+        if i == len(stations) or meta.directions_by_order[stations[i].order].index != index:
+            chunk = stations[start : min(i + 1, len(stations))]
+            if len(chunk) > 1:
+                segments.append((index, [(s.latitude, s.longitude) for s in chunk]))
+            start = i
+    return segments
+
+
+def chunk_points(points: list[Point], size: int) -> list[list[Point]]:
+    """Split waypoints into overlapping chunks (last point repeats as next first)."""
+    if len(points) < 2:
+        return []
+    step = max(size - 1, 1)
+    return [points[i : i + size] for i in range(0, len(points) - 1, step)]
+
+
+@dataclass(slots=True)
+class Arrival:
+    stops_remaining: int | None
+    seconds: int | None
+    vehicle_type: str
+
+    @property
+    def minutes(self) -> int | None:
+        return None if self.seconds is None else self.seconds // 60
+
+
+def parse_arrivals(items: list[dict[str, Any]], route_id: str) -> list[Arrival]:
+    """Arrivals of one route at a stop, soonest first."""
+    arrivals = [
+        Arrival(
+            stops_remaining=_to_int(item.get("arrprevstationcnt")),
+            seconds=_to_int(item.get("arrtime")),
+            vehicle_type=str(item.get("vehicletp", "")),
+        )
+        for item in items
+        if str(item.get("routeid", "")) == route_id
+    ]
+    arrivals.sort(key=lambda a: (a.seconds is None, a.seconds or 0))
+    return arrivals
+
+
+def stops_until(bus_order: int | None, stop_order: int) -> int | None:
+    """Stops left before a bus at `bus_order` reaches `stop_order`.
+
+    Only counts forward along the same route variant; a bus that has already
+    passed the stop returns None.
+    """
+    if bus_order is None or bus_order > stop_order:
+        return None
+    return stop_order - bus_order
 
 
 @dataclass(slots=True)
@@ -185,3 +307,21 @@ def parse_vehicle(item: dict[str, Any], meta: RouteMeta) -> BusVehicle | None:
         next_stop=next_stop,
         direction=direction,
     )
+
+
+@dataclass(slots=True)
+class TagoBusData:
+    vehicles: dict[str, BusVehicle] = field(default_factory=dict)
+    # watched stop key -> arrivals; missing key means arrival info unavailable
+    arrivals: dict[str, list[Arrival]] = field(default_factory=dict)
+
+    def approaching(self, stop: WatchedStop) -> list[tuple[int, BusVehicle]]:
+        """Buses heading to a watched stop by local position, nearest first."""
+        found = [
+            (stops, v)
+            for v in self.vehicles.values()
+            if v.route_id == stop.route_id
+            and (stops := stops_until(v.stop_order, stop.station.order)) is not None
+        ]
+        found.sort(key=lambda pair: pair[0])
+        return found

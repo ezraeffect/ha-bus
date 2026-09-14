@@ -100,5 +100,79 @@ class ParseVehicleTest(unittest.TestCase):
         self.assertEqual(v.direction.index, 0)
 
 
+class FavoriteStopTest(unittest.TestCase):
+    def setUp(self):
+        stations = [
+            {"nodeord": i, "nodenm": f"S{i}", "nodeid": f"N{i}", "updowncd": 0 if i <= 3 else 1,
+             "gpslati": str(36.8 + i / 1000), "gpslong": "127.1"}
+            for i in range(1, 7)
+        ]
+        self.routes = {"CAB1": models.build_route_meta(INFO, stations, 0)}
+
+    def test_resolve(self):
+        stops, unknown = models.resolve_favorites({"CAB1": 5, "NOPE": 1}, self.routes)
+        self.assertEqual(list(stops), ["CAB1"])
+        self.assertEqual(stops["CAB1"].key, "CAB1:5")
+        self.assertAlmostEqual(stops["CAB1"].station.latitude, 36.805)
+        self.assertEqual(stops["CAB1"].label, "S5 (S6 방면)")
+        self.assertEqual(unknown, {"NOPE": 1})
+
+    def test_resolve_unknown_order(self):
+        stops, unknown = models.resolve_favorites({"CAB1": 99}, self.routes)
+        self.assertEqual(stops, {})
+        self.assertEqual(unknown, {"CAB1": 99})
+
+    def test_stop_key_roundtrip(self):
+        self.assertEqual(models.parse_stop_key(models.stop_key("CAB:1", 7)), ("CAB:1", 7))
+        self.assertIsNone(models.parse_stop_key("garbage"))
+        self.assertIsNone(models.parse_stop_key("CAB1:x"))
+
+    def test_direction_segments_are_continuous(self):
+        segments = models.direction_segments(self.routes["CAB1"])
+        self.assertEqual([i for i, _ in segments], [0, 1])
+        first, second = segments[0][1], segments[1][1]
+        self.assertEqual(len(first), 4)  # S1..S3 plus S4 to join the next direction
+        self.assertEqual(first[-1], second[0])
+        self.assertEqual(len(second), 3)
+
+    def test_chunk_points_overlap(self):
+        pts = [(float(i), 0.0) for i in range(10)]
+        chunks = models.chunk_points(pts, 4)
+        self.assertEqual([len(c) for c in chunks], [4, 4, 4])
+        for a, b in zip(chunks, chunks[1:]):
+            self.assertEqual(a[-1], b[0])
+        self.assertEqual(chunks[-1][-1], pts[-1])
+        self.assertEqual(models.chunk_points(pts[:1], 4), [])
+
+    def test_stops_until(self):
+        self.assertEqual(models.stops_until(2, 5), 3)
+        self.assertEqual(models.stops_until(5, 5), 0)
+        self.assertIsNone(models.stops_until(6, 5))
+        self.assertIsNone(models.stops_until(None, 5))
+
+    def test_approaching_sorted_and_filtered(self):
+        meta = self.routes["CAB1"]
+        stop = models.resolve_favorites({"CAB1": 5}, self.routes)[0]["CAB1"]
+        data = models.TagoBusData()
+        for no, order in (("A", 1), ("B", 4), ("C", 6)):
+            v = models.parse_vehicle(
+                {"gpslati": 36.8, "gpslong": 127.1, "vehicleno": no, "nodeord": order}, meta
+            )
+            data.vehicles[v.key] = v
+        self.assertEqual([(n, v.vehicle_no) for n, v in data.approaching(stop)], [(1, "B"), (4, "A")])
+
+    def test_parse_arrivals_filters_route_and_sorts(self):
+        items = [
+            {"routeid": "CAB1", "arrtime": "400", "arrprevstationcnt": "4", "vehicletp": "저상버스"},
+            {"routeid": "OTHER", "arrtime": 10, "arrprevstationcnt": 1},
+            {"routeid": "CAB1", "arrtime": 59, "arrprevstationcnt": 1},
+        ]
+        arrivals = models.parse_arrivals(items, "CAB1")
+        self.assertEqual([a.seconds for a in arrivals], [59, 400])
+        self.assertEqual(arrivals[0].minutes, 0)
+        self.assertEqual(arrivals[1].minutes, 6)
+        self.assertEqual(arrivals[1].vehicle_type, "저상버스")
+
+
 if __name__ == "__main__":
     unittest.main()

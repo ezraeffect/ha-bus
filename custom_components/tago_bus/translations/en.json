@@ -44,11 +44,20 @@
     "step": {
       "init": {
         "title": "Polling",
-        "description": "Shorter intervals use more of your daily quota. Polling slows to every 5 minutes automatically while no bus is running.",
+        "description": "Shorter intervals use more of your daily quota. Polling slows to every 5 minutes automatically while no bus is running.\n\nYou can pick one favorite stop per route here, or tap a stop on the map card. Arrival times need the 'TAGO bus arrival' API; without it, stops remaining are computed from bus positions. {stops_note}",
         "data": {
-          "scan_interval": "Scan interval (seconds)"
+          "scan_interval": "Scan interval (seconds)",
+          "road_geometry": "Draw route lines along real roads",
+          "favorites": "Favorite stops"
+        },
+        "data_description": {
+          "road_geometry": "Sends stop coordinates to the public OSRM routing server (OpenStreetMap). Only queried when a route shape changes; results are cached.",
+          "favorites": "Loop routes list the same stop name once per direction, so check the direction label."
         }
       }
+    },
+    "error": {
+      "one_favorite_per_route": "Pick at most one favorite stop per route."
     }
   }
 }
