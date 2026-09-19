@@ -153,6 +153,28 @@ geo_location_sources:
   - tago_bus
 ```
 
+### 로그북·기록에서 버스 빼기
+
+버스는 30초마다 위치가 바뀌어서, 그대로 두면 로그북이 버스 기록으로 가득 찹니다. Home Assistant는 로그북 제외를 설정 파일로만 지원하므로 `configuration.yaml`에 아래를 넣고 재시작하세요.
+
+```yaml
+recorder:
+  exclude:
+    entity_globs:
+      - geo_location.tago_bus_*
+
+logbook:
+  exclude:
+    entity_globs:
+      - geo_location.tago_bus_*
+```
+
+- `recorder` 쪽이 핵심입니다. 여기서 빼면 기록 자체를 남기지 않아 데이터베이스도 커지지 않고, 로그북에도 나오지 않습니다.
+- 지도 카드는 현재 상태만 읽기 때문에 **기록을 빼도 그대로 동작합니다.** zone 진입 자동화도 영향받지 않습니다.
+- 이미 `recorder:`나 `logbook:` 항목이 있다면 `exclude:` 아래 `entity_globs:`에 한 줄만 추가하세요.
+- 도착 예정·남은 정거장·운행 대수 센서는 단위가 있는 숫자 센서라 Home Assistant가 로그북에서 알아서 빼 줍니다. 기록까지 빼고 싶으면 **설정 → 엔티티**에서 실제 엔티티 ID를 확인해 `exclude`의 `entities:`에 넣으세요.
+- 통합이 스스로 로그북에서 빠질 방법은 없습니다. Home Assistant가 로그북 제외를 설정 파일로만 받기 때문입니다.
+
 ## 자동화 예시
 
 ### 버스가 즐겨찾는 정류장 3정거장 전이면 알림
