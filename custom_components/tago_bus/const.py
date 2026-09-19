@@ -27,7 +27,7 @@ MAP_ENTITY_BUSES = "buses"
 MAP_ENTITY_FAVORITE_STOPS = "favorite_stops"
 DEFAULT_MAP_ENTITIES = [MAP_ENTITY_BUSES]
 
-VERSION = "0.5.0"
+VERSION = "0.5.1"
 
 # Public OSRM demo server: used once per route shape, results are cached.
 OSRM_ROUTE_URL = "https://router.project-osrm.org/route/v1/driving/"
