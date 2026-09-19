@@ -4,17 +4,24 @@ from __future__ import annotations
 
 from typing import Any
 
+from datetime import datetime, timedelta
+
 from homeassistant.components.geo_location import GeolocationEvent
 from homeassistant.const import UnitOfLength
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.util import slugify
+from homeassistant.util import dt as dt_util, slugify
 from homeassistant.util.location import distance
 
 from .const import DOMAIN, MAP_ENTITY_BUSES, SOURCE
 from .coordinator import TagoBusConfigEntry, TagoBusCoordinator
 from .marker import marker_url
 from .models import BusVehicle, stops_until
+
+# A bus can drop out of the API for a poll or two while still running. Removing
+# its entity right away and recreating it moments later makes Home Assistant
+# reject the entity id as still in use, so let it linger first.
+REMOVAL_GRACE = timedelta(minutes=3)
 
 
 async def async_setup_entry(
@@ -24,27 +31,43 @@ async def async_setup_entry(
 ) -> None:
     coordinator = entry.runtime_data
     entities: dict[str, BusLocationEvent] = {}
+    missing_since: dict[str, datetime] = {}
+    removing: set[str] = set()
+
+    async def _remove(key: str, entity: BusLocationEvent) -> None:
+        try:
+            await entity.async_remove(force_remove=True)
+        finally:
+            removing.discard(key)
 
     @callback
     def _sync() -> None:
         if not coordinator.last_update_success or coordinator.data is None:
             return
         vehicles = coordinator.data.vehicles
+        now = dt_util.utcnow()
 
         new: list[BusLocationEvent] = []
         for key, vehicle in vehicles.items():
+            missing_since.pop(key, None)
             if entity := entities.get(key):
                 entity.update_vehicle(vehicle)
-            else:
+            elif key not in removing:
+                # Still being removed: pick the bus up on the next refresh.
                 entities[key] = entity = BusLocationEvent(hass, coordinator, vehicle)
                 new.append(entity)
         if new:
             async_add_entities(new)
 
         for key in [k for k in entities if k not in vehicles]:
+            first_missing = missing_since.setdefault(key, now)
+            if now - first_missing < REMOVAL_GRACE:
+                continue
             entity = entities.pop(key)
+            missing_since.pop(key, None)
             if entity.hass is not None:
-                hass.async_create_task(entity.async_remove(force_remove=True))
+                removing.add(key)
+                hass.async_create_task(_remove(key, entity))
 
     _sync()
     entry.async_on_unload(coordinator.async_add_listener(_sync))

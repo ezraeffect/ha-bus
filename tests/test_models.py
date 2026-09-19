@@ -174,5 +174,29 @@ class FavoriteStopTest(unittest.TestCase):
         self.assertEqual(arrivals[1].vehicle_type, "저상버스")
 
 
+class ClassifyErrorTest(unittest.TestCase):
+    def test_busy_session_limit(self):
+        # What the portal returns once every session for the key is in use.
+        self.assertEqual(
+            models.classify_error("99", "가용한 세션이 존재하지 않습니다. (30/30)"),
+            models.ERROR_BUSY,
+        )
+
+    def test_auth_and_quota(self):
+        self.assertEqual(models.classify_error("30", ""), models.ERROR_AUTH)
+        self.assertEqual(
+            models.classify_error("", "SERVICE_KEY_IS_NOT_REGISTERED_ERROR"), models.ERROR_AUTH
+        )
+        self.assertEqual(models.classify_error("22", ""), models.ERROR_QUOTA)
+        self.assertEqual(
+            models.classify_error("", "LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR"),
+            models.ERROR_QUOTA,
+        )
+
+    def test_unknown_error_is_other(self):
+        self.assertEqual(models.classify_error("99", "알 수 없는 오류"), models.ERROR_OTHER)
+        self.assertEqual(models.classify_error("", ""), models.ERROR_OTHER)
+
+
 if __name__ == "__main__":
     unittest.main()

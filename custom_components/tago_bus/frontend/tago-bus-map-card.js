@@ -15,7 +15,7 @@
  * tiles: auto | naver | ha | osm
  */
 
-const CARD_VERSION = "0.5.0";
+const CARD_VERSION = "0.5.1";
 const LEAFLET_BASE = "https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4";
 // Base map sources, tried in this order for `tiles: auto`:
 //  1. naver_map_change integration (NAVER tiles proxied by HA)
@@ -110,6 +110,14 @@ function writeOverviewOpen(open) {
 }
 
 class TagoBusMapCard extends HTMLElement {
+  // Home Assistant pushes state updates while _init() is still awaiting
+  // Leaflet and the base map, so start out with empty collections and only
+  // draw once _init() has finished.
+  _ready = false;
+  _busMarkers = new Map();
+  _stopMarkers = [];
+  _lineData = [];
+
   static getStubConfig() {
     return {};
   }
@@ -125,8 +133,8 @@ class TagoBusMapCard extends HTMLElement {
       tiles: "auto",
       ...config,
     };
-    if (this._container) {
-      this._applySize();
+    this._applySize();
+    if (this._ready) {
       this._drawStatic();
       this._renderOverview();
     }
@@ -180,7 +188,7 @@ class TagoBusMapCard extends HTMLElement {
       this._init();
       return;
     }
-    if (this._map) {
+    if (this._ready) {
       this._syncTheme();
       this._updateBuses();
       this._refreshOpenOverlays();
@@ -331,10 +339,8 @@ class TagoBusMapCard extends HTMLElement {
     this._arrowLayer = L.layerGroup().addTo(this._map);
     this._stopLayer = L.layerGroup().addTo(this._map);
     this._busLayer = L.layerGroup().addTo(this._map);
-    this._busMarkers = new Map();
-    this._stopMarkers = [];
-    this._lineData = [];
     this._overviewOpen = readOverviewOpen();
+    this._ready = true;
 
     // Chevrons are placed in screen space, so redo them when the view changes.
     this._map.on("zoomend moveend", () => this._scheduleArrows());

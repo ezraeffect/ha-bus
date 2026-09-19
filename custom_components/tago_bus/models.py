@@ -6,6 +6,38 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
+ERROR_AUTH = "auth"
+ERROR_QUOTA = "quota"
+ERROR_BUSY = "busy"
+ERROR_OTHER = "other"
+
+# data.go.kr result codes and the English strings its gateway returns.
+_AUTH_CODES = ("30", "31", "32")
+_AUTH_TEXTS = (
+    "SERVICE_KEY_IS_NOT_REGISTERED_ERROR",
+    "SERVICE ACCESS DENIED ERROR",
+    "UNREGISTERED",
+    "DEADLINE_HAS_EXPIRED_ERROR",
+)
+_QUOTA_CODES = ("22",)
+_QUOTA_TEXTS = ("LIMITED_NUMBER_OF_SERVICE_REQUESTS_EXCEEDS_ERROR",)
+# "가용한 세션이 존재하지 않습니다" means every session for this key is busy.
+_BUSY_TEXTS = ("가용한 세션", "SERVICE IS NOT AVAILABLE", "일시적", "점검")
+
+
+def classify_error(code: str, message: str) -> str:
+    """Sort an API error into auth / quota / temporary / other."""
+    code = (code or "").strip()
+    upper = (message or "").upper()
+    if code in _AUTH_CODES or any(t in upper for t in _AUTH_TEXTS):
+        return ERROR_AUTH
+    if code in _QUOTA_CODES or any(t in upper for t in _QUOTA_TEXTS):
+        return ERROR_QUOTA
+    if any(t.upper() in upper for t in _BUSY_TEXTS):
+        return ERROR_BUSY
+    return ERROR_OTHER
+
+
 def extract_items(data: dict[str, Any]) -> list[dict[str, Any]]:
     """Return the item list from a TAGO JSON response.
 

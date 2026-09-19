@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
-from .api import TagoApi, TagoAuthError, TagoError, TagoQuotaError
+from .api import TagoApi, TagoAuthError, TagoBusyError, TagoError, TagoQuotaError
 from .const import (
     CONF_CITY_CODE,
     CONF_FAVORITES,
@@ -42,6 +42,9 @@ from .models import (
 )
 
 type TagoBusConfigEntry = ConfigEntry[TagoBusCoordinator]
+
+# The arrival API can be unavailable for hours; say so once, not every poll.
+ARRIVAL_ERROR_LOG_INTERVAL = timedelta(hours=1)
 
 
 class TagoBusCoordinator(DataUpdateCoordinator[TagoBusData]):
@@ -78,6 +81,7 @@ class TagoBusCoordinator(DataUpdateCoordinator[TagoBusData]):
         self.segments: dict[str, list[Segment]] = {}  # route_id -> drawn lines
         self.geometry_ready = False
         self.arrival_error: str | None = None
+        self._arrival_error_logged: datetime | None = None
         self._geometry = geometry
         self._stations_loaded: datetime | None = None
 
@@ -144,9 +148,10 @@ class TagoBusCoordinator(DataUpdateCoordinator[TagoBusData]):
                     raise
                 LOGGER.warning("Keeping cached station list: %s", err)
 
-        locations, arrivals = await asyncio.gather(
-            self._fetch_locations(), self._fetch_arrivals()
-        )
+        # The API client allows one request at a time (session limit), so there
+        # is nothing to gain from running these concurrently.
+        locations = await self._fetch_locations()
+        arrivals = await self._fetch_arrivals()
         # Back off while nothing is running (e.g. overnight).
         self.update_interval = (
             self._interval if locations else timedelta(seconds=IDLE_SCAN_INTERVAL)
@@ -155,12 +160,10 @@ class TagoBusCoordinator(DataUpdateCoordinator[TagoBusData]):
 
     async def _fetch_locations(self) -> dict[str, BusVehicle]:
         try:
-            results = await asyncio.gather(
-                *(
-                    self.api.get_bus_locations(self.city_code, rid)
-                    for rid in self.route_ids
-                )
-            )
+            results = [
+                await self.api.get_bus_locations(self.city_code, rid)
+                for rid in self.route_ids
+            ]
         except TagoAuthError as err:
             raise UpdateFailed(
                 f"API 키 인증 실패 (발급 직후라면 1~2시간 뒤 다시 시도): {err}"
@@ -168,6 +171,10 @@ class TagoBusCoordinator(DataUpdateCoordinator[TagoBusData]):
         except TagoQuotaError as err:
             self.update_interval = timedelta(seconds=IDLE_SCAN_INTERVAL)
             raise UpdateFailed(f"일일 호출 한도를 초과했습니다: {err}") from err
+        except TagoBusyError as err:
+            raise UpdateFailed(
+                f"공공데이터포털이 잠시 응답하지 않습니다 (동시 접속 제한). 다음 주기에 다시 시도합니다: {err}"
+            ) from err
         except TagoError as err:
             raise UpdateFailed(str(err)) from err
 
@@ -185,31 +192,51 @@ class TagoBusCoordinator(DataUpdateCoordinator[TagoBusData]):
             return {}
 
         node_ids = list(dict.fromkeys(s.station.node_id for s in self.watched_stops))
-        results = await asyncio.gather(
-            *(self.api.get_arrivals(self.city_code, nid) for nid in node_ids),
-            return_exceptions=True,
-        )
-        by_node = dict(zip(node_ids, results, strict=True))
+        by_node: dict[str, list[dict] | TagoError] = {}
+        for node_id in node_ids:
+            try:
+                by_node[node_id] = await self.api.get_arrivals(self.city_code, node_id)
+            except TagoError as err:
+                by_node[node_id] = err
 
         arrivals: dict[str, list[Arrival]] = {}
-        error: str | None = None
+        error: TagoError | None = None
         for stop in self.watched_stops:
             result = by_node[stop.station.node_id]
-            if isinstance(result, BaseException):
-                if not isinstance(result, TagoError):
-                    raise result
-                error = str(result)
+            if isinstance(result, TagoError):
+                error = result
                 continue
             arrivals[stop.key] = parse_arrivals(result, stop.route_id)
 
-        if error != self.arrival_error:
-            if error:
-                LOGGER.warning(
-                    "도착정보 API 조회 실패 (버스도착정보 API 활용신청 여부를 확인하세요). "
-                    "남은 정거장은 버스 위치로 계산합니다: %s",
-                    error,
-                )
-            else:
-                LOGGER.info("도착정보 API 조회가 복구되었습니다")
-            self.arrival_error = error
+        self._log_arrival_error(error)
         return arrivals
+
+    def _log_arrival_error(self, error: TagoError | None) -> None:
+        """Warn on the first failure, then at most once an hour."""
+        if error is None:
+            if self.arrival_error:
+                LOGGER.info("도착정보 API 조회가 복구되었습니다")
+            self.arrival_error = None
+            self._arrival_error_logged = None
+            return
+
+        self.arrival_error = str(error)
+        now = dt_util.utcnow()
+        if (
+            self._arrival_error_logged is not None
+            and now - self._arrival_error_logged < ARRIVAL_ERROR_LOG_INTERVAL
+        ):
+            return
+        self._arrival_error_logged = now
+        if isinstance(error, TagoBusyError):
+            LOGGER.warning(
+                "도착정보 API가 일시적으로 응답하지 않습니다 (동시 접속 제한). "
+                "남은 정거장은 버스 위치로 계산합니다: %s",
+                error,
+            )
+        else:
+            LOGGER.warning(
+                "도착정보 API 조회 실패 (버스도착정보 API 활용신청 여부를 확인하세요). "
+                "남은 정거장은 버스 위치로 계산합니다: %s",
+                error,
+            )
